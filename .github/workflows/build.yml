@@ -70,26 +70,30 @@ jobs:
           build-args: |
             OBI_VERSION=${{ github.event.inputs.obi_version || 'v0.10.0' }}
             PATCH_SET=${{ matrix.patch_set }}
-          # THE DEPLOYABLE TAG IS <variant>-sha-<short>. It is never reused, so
-          # it is safe to reference from a manifest.
+          # EVERY TAG CARRYING MEANING ENDS IN -sha-<short>, so it is never
+          # reused and is safe to reference from a manifest:
           #
-          # The other two float: a rebuild repushes them onto new bytes. That is
-          # a silent failure downstream, because these images are consumed
+          #   <variant>-sha-<short>                      short form, what we deploy
+          #   <contrib>-obi-<obi>-<variant>-sha-<short>  same image, fully described
+          #
+          # Only <variant> floats, and it exists purely so a human can pull
+          # "the current patched one". Never reference it from a manifest.
+          #
+          # Why no floating tag may carry meaning: these images are consumed
           # through an ECR pull-through cache, which caches by tag and does not
-          # re-resolve a tag it has already seen. A repushed :patched leaves
-          # nodes on the old image while the tag, the pod spec and the manifest
-          # all still look correct.
+          # re-resolve a tag it has already seen. Repushing a version tag onto
+          # new bytes leaves nodes on the old image while the tag, the pod spec
+          # and the manifest all still read correct -- nothing alerts. A version
+          # tag is the most dangerous kind to float, because it looks precise
+          # enough to trust.
           #
           # Pinning a digest instead does NOT work here: pull-through import is
           # tag-driven, so a digest ECR has never cached has no import path and
           # fails with "manifest unknown: Requested image not found". An
           # immutable tag is both the safe form and the readable one.
-          #
-          # So: deploy <variant>-sha-<short>; treat the floating tags as
-          # human conveniences only, never as manifest references.
           tags: |
             ghcr.io/clode-labs/otel-collector-obi:${{ matrix.variant }}-sha-${{ steps.v.outputs.short }}
-            ghcr.io/clode-labs/otel-collector-obi:${{ steps.v.outputs.contrib }}-obi-${{ github.event.inputs.obi_version || 'v0.10.0' }}-${{ matrix.variant }}
+            ghcr.io/clode-labs/otel-collector-obi:${{ steps.v.outputs.contrib }}-obi-${{ github.event.inputs.obi_version || 'v0.10.0' }}-${{ matrix.variant }}-sha-${{ steps.v.outputs.short }}
             ghcr.io/clode-labs/otel-collector-obi:${{ matrix.variant }}
           cache-from: type=gha,scope=${{ matrix.variant }}
           cache-to: type=gha,mode=max,scope=${{ matrix.variant }}
