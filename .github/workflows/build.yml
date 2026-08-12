@@ -22,11 +22,14 @@ jobs:
       matrix:
         include:
           # Identical pipeline, identical component set. The only difference is
-          # whether the OBI patch is applied, so the pair can be compared directly.
+          # which patches are applied, so the variants can be compared directly
+          # and each fix attributed on its own.
           - variant: patched
-            apply_patch: "true"
+            patch_set: full
+          - variant: envonly
+            patch_set: env
           - variant: baseline
-            apply_patch: "false"
+            patch_set: none
     steps:
       - uses: actions/checkout@v4
 
@@ -47,7 +50,7 @@ jobs:
           provenance: false
           build-args: |
             OBI_VERSION=${{ github.event.inputs.obi_version || 'v0.10.0' }}
-            APPLY_PATCH=${{ matrix.apply_patch }}
+            PATCH_SET=${{ matrix.patch_set }}
           tags: |
             ghcr.io/clode-labs/otel-collector-obi:0.156.0-obi-${{ github.event.inputs.obi_version || 'v0.10.0' }}-${{ matrix.variant }}
             ghcr.io/clode-labs/otel-collector-obi:${{ matrix.variant }}

@@ -1,0 +1,59 @@
+diff --git a/pkg/ebpf/instrumenter.go b/pkg/ebpf/instrumenter.go
+index 54215bf5..930152f8 100644
+--- a/pkg/ebpf/instrumenter.go
++++ b/pkg/ebpf/instrumenter.go
+@@ -577,6 +577,15 @@ func (i *instrumenter) instrumentUSDTProbe(
+ 			"sema_off", fmt.Sprintf("%#x", target.SemaOff),
+ 		)
+ 
++		// see the uprobe method: a zero address falls back to symbol resolution,
++		// which retains the executable's full symbol table for a lookup that
++		// cannot succeed with an empty symbol name.
++		if target.RelIP == 0 {
++			_ = ipMapCleanup.Close()
++			closeAll(closers)
++			return nil, fmt.Errorf("attaching USDT probe %s:%s: missing relative instruction pointer", probe.Provider, probe.Name)
++		}
++
+ 		up, err := exe.Uprobe("", probe.Program, &link.UprobeOptions{
+ 			Address:      target.RelIP,
+ 			PID:          int(pid),
+@@ -616,10 +625,24 @@ func usdtIPMapPIDs(pid app.PID) []app.PID {
+ 	return pids
+ }
+ 
++// uprobe attaches a probe at a resolved offset. Offsets must be non-zero: probes
++// are attached with an empty symbol name, and link.Executable.Uprobe only takes
++// the address fast path when the address is greater than zero. With a zero
++// address it falls back to symbol resolution, which parses the executable's full
++// symbol table and caches it on the Executable for its whole lifetime, before
++// inevitably failing to find the empty symbol. Rejecting zero offsets up front
++// avoids retaining a symbol table for an attachment that cannot succeed.
+ func (i *instrumenter) uprobe(exe *link.Executable, probe *ebpfcommon.ProbeDesc) ([]io.Closer, error) {
+ 	var closers []io.Closer
+ 
+ 	if probe.Start != nil {
++		if probe.StartOffset == 0 {
++			if i.metrics != nil {
++				i.metrics.InstrumentationError(i.processName, imetrics.InstrumentationErrorAttachingUprobe)
++			}
++			return closers, errors.New("setting uprobe (offset): missing start offset")
++		}
++
+ 		up, err := exe.Uprobe("", probe.Start, &link.UprobeOptions{
+ 			Address: probe.StartOffset,
+ 		})
+@@ -642,6 +665,13 @@ func (i *instrumenter) uprobe(exe *link.Executable, probe *ebpfcommon.ProbeDesc)
+ 		}
+ 
+ 		for _, offset := range probe.ReturnOffsets {
++			if offset == 0 {
++				if i.metrics != nil {
++					i.metrics.InstrumentationError(i.processName, imetrics.InstrumentationErrorAttachingUprobe)
++				}
++				return closers, errors.New("setting uretprobe (attaching to offset): missing return offset")
++			}
++
+ 			up, err := exe.Uprobe("", probe.End, &link.UprobeOptions{
+ 				Address: offset,
+ 			})
