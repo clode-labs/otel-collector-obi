@@ -1,0 +1,55 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      obi_version:
+        description: OBI release to build against
+        required: false
+        default: v0.10.0
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Identical pipeline, identical component set. The only difference is
+          # whether the OBI patch is applied, so the pair can be compared directly.
+          - variant: patched
+            apply_patch: "true"
+          - variant: baseline
+            apply_patch: "false"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          build-args: |
+            OBI_VERSION=${{ github.event.inputs.obi_version || 'v0.10.0' }}
+            APPLY_PATCH=${{ matrix.apply_patch }}
+          tags: |
+            ghcr.io/clode-labs/otel-collector-obi:0.156.0-obi-${{ github.event.inputs.obi_version || 'v0.10.0' }}-${{ matrix.variant }}
+            ghcr.io/clode-labs/otel-collector-obi:${{ matrix.variant }}
+          cache-from: type=gha,scope=${{ matrix.variant }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.variant }}
