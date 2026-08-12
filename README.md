@@ -48,16 +48,40 @@ The Dockerfile mirrors that exactly — same tarball, verified against the same
 ## Images
 
 The workflow builds all three variants through an identical pipeline, so they
-differ only by which patches are applied:
+differ only by which patches are applied. All live in
+`ghcr.io/clode-labs/otel-collector-obi`:
 
-| tag | `PATCH_SET` | contents |
+| variant | `PATCH_SET` | contents |
 |---|---|---|
-| `ghcr.io/clode-labs/otel-collector-obi:baseline` | `none` | upstream, unmodified |
-| `ghcr.io/clode-labs/otel-collector-obi:envonly` | `env` | issue 1 only |
-| `ghcr.io/clode-labs/otel-collector-obi:patched` | `full` | issues 1 and 2 |
+| `baseline` | `none` | upstream, unmodified |
+| `envonly` | `env` | issue 1 only |
+| `patched` | `full` | issues 1 and 2 |
 
 The `envonly` variant exists so the two fixes can be attributed separately
 rather than only as a pair.
+
+Each variant is pushed under three tags:
+
+| tag | mutable? | use |
+|---|---|---|
+| `<variant>-sha-<short>` | **no** | **the only form to reference from a manifest** |
+| `0.156.0-obi-<obi>-<variant>` | yes | informational — what it was built from |
+| `<variant>` | yes | convenience — "the current one" |
+
+### Deploy by `<variant>-sha-<short>`, never by a floating tag
+
+These images are consumed through an **ECR pull-through cache**, which caches by
+tag and does not re-resolve a tag it has already seen. Repushing `:patched`
+therefore leaves nodes running the old image while the tag, the pod spec and the
+manifest all still look correct — a silent failure with nothing to alert on.
+
+Pinning a digest does **not** solve it either: pull-through import is
+tag-driven, so a digest ECR has never cached has no import path and the pull
+fails with `manifest unknown: Requested image not found`. That breaks precisely
+the case you need — rolling out a newly pushed build.
+
+An immutable tag is both the safe form and the readable one: `patched-sha-a1b2c3d`
+tells you which commit produced the image; a bare digest does not.
 
 Entrypoint and binary name match the upstream contrib image, so an existing pod
 spec works unchanged.
