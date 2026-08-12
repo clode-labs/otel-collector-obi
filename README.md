@@ -21,8 +21,15 @@ processes and the volume of spans:
    parsing the executable's full symbol table and caching it on the `Executable`
    for its lifetime, before failing to find the empty symbol.
 
-The patch in `patches/` addresses both. It applies to OBI `v0.10.0`, the version
-embedded in `otel/opentelemetry-collector-contrib:0.156.0`.
+`patches/` holds one patch per issue, so each can be measured on its own:
+
+| file | addresses |
+|---|---|
+| `01-envvar-retention.patch` | issue 1 |
+| `02-uprobe-zero-offset.patch` | issue 2 |
+
+Both apply to OBI `v0.10.0`, the version embedded in
+`otel/opentelemetry-collector-contrib:0.156.0`.
 
 ## How the build works
 
@@ -40,13 +47,17 @@ The Dockerfile mirrors that exactly — same tarball, verified against the same
 
 ## Images
 
-The workflow builds both variants through an identical pipeline, so they differ
-only by the patch:
+The workflow builds all three variants through an identical pipeline, so they
+differ only by which patches are applied:
 
-```
-ghcr.io/clode-labs/otel-collector-obi:baseline
-ghcr.io/clode-labs/otel-collector-obi:patched
-```
+| tag | `PATCH_SET` | contents |
+|---|---|---|
+| `ghcr.io/clode-labs/otel-collector-obi:baseline` | `none` | upstream, unmodified |
+| `ghcr.io/clode-labs/otel-collector-obi:envonly` | `env` | issue 1 only |
+| `ghcr.io/clode-labs/otel-collector-obi:patched` | `full` | issues 1 and 2 |
+
+The `envonly` variant exists so the two fixes can be attributed separately
+rather than only as a pair.
 
 Entrypoint and binary name match the upstream contrib image, so an existing pod
 spec works unchanged.
@@ -54,6 +65,7 @@ spec works unchanged.
 ## Building locally
 
 ```sh
-docker build --build-arg APPLY_PATCH=true  -t otel-collector-obi:patched  .
-docker build --build-arg APPLY_PATCH=false -t otel-collector-obi:baseline .
+docker build --build-arg PATCH_SET=none -t otel-collector-obi:baseline .
+docker build --build-arg PATCH_SET=env  -t otel-collector-obi:envonly  .
+docker build --build-arg PATCH_SET=full -t otel-collector-obi:patched  .
 ```
