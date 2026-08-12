@@ -64,9 +64,13 @@ Each variant is pushed under three tags:
 
 | tag | mutable? | use |
 |---|---|---|
-| `<variant>-sha-<short>` | **no** | **the only form to reference from a manifest** |
-| `0.156.0-obi-<obi>-<variant>` | yes | informational — what it was built from |
-| `<variant>` | yes | convenience — "the current one" |
+| `<variant>-sha-<short>` | **no** | **what we deploy** — short form |
+| `<contrib>-obi-<obi>-<variant>-sha-<short>` | **no** | same image, fully described |
+| `<variant>` | yes | convenience only — "the current one" |
+
+`<contrib>` is read from `manifest.yaml`, so it cannot drift from the binary.
+Every tag that carries meaning ends in `-sha-<short>`; only the bare variant
+name floats.
 
 ### Deploy by `<variant>-sha-<short>`, never by a floating tag
 
