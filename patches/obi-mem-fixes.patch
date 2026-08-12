@@ -1,0 +1,161 @@
+diff --git a/pkg/ebpf/instrumenter.go b/pkg/ebpf/instrumenter.go
+index 54215bf5..930152f8 100644
+--- a/pkg/ebpf/instrumenter.go
++++ b/pkg/ebpf/instrumenter.go
+@@ -577,6 +577,15 @@ func (i *instrumenter) instrumentUSDTProbe(
+ 			"sema_off", fmt.Sprintf("%#x", target.SemaOff),
+ 		)
+ 
++		// see the uprobe method: a zero address falls back to symbol resolution,
++		// which retains the executable's full symbol table for a lookup that
++		// cannot succeed with an empty symbol name.
++		if target.RelIP == 0 {
++			_ = ipMapCleanup.Close()
++			closeAll(closers)
++			return nil, fmt.Errorf("attaching USDT probe %s:%s: missing relative instruction pointer", probe.Provider, probe.Name)
++		}
++
+ 		up, err := exe.Uprobe("", probe.Program, &link.UprobeOptions{
+ 			Address:      target.RelIP,
+ 			PID:          int(pid),
+@@ -616,10 +625,24 @@ func usdtIPMapPIDs(pid app.PID) []app.PID {
+ 	return pids
+ }
+ 
++// uprobe attaches a probe at a resolved offset. Offsets must be non-zero: probes
++// are attached with an empty symbol name, and link.Executable.Uprobe only takes
++// the address fast path when the address is greater than zero. With a zero
++// address it falls back to symbol resolution, which parses the executable's full
++// symbol table and caches it on the Executable for its whole lifetime, before
++// inevitably failing to find the empty symbol. Rejecting zero offsets up front
++// avoids retaining a symbol table for an attachment that cannot succeed.
+ func (i *instrumenter) uprobe(exe *link.Executable, probe *ebpfcommon.ProbeDesc) ([]io.Closer, error) {
+ 	var closers []io.Closer
+ 
+ 	if probe.Start != nil {
++		if probe.StartOffset == 0 {
++			if i.metrics != nil {
++				i.metrics.InstrumentationError(i.processName, imetrics.InstrumentationErrorAttachingUprobe)
++			}
++			return closers, errors.New("setting uprobe (offset): missing start offset")
++		}
++
+ 		up, err := exe.Uprobe("", probe.Start, &link.UprobeOptions{
+ 			Address: probe.StartOffset,
+ 		})
+@@ -642,6 +665,13 @@ func (i *instrumenter) uprobe(exe *link.Executable, probe *ebpfcommon.ProbeDesc)
+ 		}
+ 
+ 		for _, offset := range probe.ReturnOffsets {
++			if offset == 0 {
++				if i.metrics != nil {
++					i.metrics.InstrumentationError(i.processName, imetrics.InstrumentationErrorAttachingUprobe)
++				}
++				return closers, errors.New("setting uretprobe (attaching to offset): missing return offset")
++			}
++
+ 			up, err := exe.Uprobe("", probe.End, &link.UprobeOptions{
+ 				Address: offset,
+ 			})
+diff --git a/pkg/internal/procs/procenv.go b/pkg/internal/procs/procenv.go
+index 7d967b88..e2802d8b 100644
+--- a/pkg/internal/procs/procenv.go
++++ b/pkg/internal/procs/procenv.go
+@@ -11,8 +11,38 @@ import (
+ 	"go.opentelemetry.io/obi/pkg/appolly/app"
+ )
+ 
+-func envStrsToMap(varsStr []string) map[string]string {
+-	vars := make(map[string]string, len(varsStr))
++// retainedEnvVars is the set of environment variables OBI actually reads from an
++// instrumented process. Everything else is discarded at discovery time.
++//
++// The full environ used to be retained on svc.Attrs.EnvVars, which
++// FileInfo.ServiceAttrs() deep-copies with maps.Clone. That method is called once
++// per span in PIDsFilter.Filter, so every span in flight carried a full copy of its
++// process environment. On a node with high process churn this dominates the heap.
++//
++// This mirrors usefulEnvVars, the equivalent allow-list already applied to the
++// Kubernetes discovery path in pkg/kube/kubecache/meta/informers_init.go.
++var retainedEnvVars = map[string]struct{}{
++	"OTEL_SERVICE_NAME":                   {}, // discover/exec.ApplyEnvVariables
++	"OTEL_RESOURCE_ATTRIBUTES":            {}, // discover/exec.ApplyEnvVariables, otelcfg.parseOTELEnvVar
++	"OTEL_EXPORTER_OTLP_PROTOCOL":         {}, // request.Span OTel self-export detection
++	"OTEL_EXPORTER_OTLP_TRACES_PROTOCOL":  {},
++	"OTEL_EXPORTER_OTLP_METRICS_PROTOCOL": {},
++	"OTEL_EXPORTER_OTLP_ENDPOINT":         {}, // request.Span.portFromEndpointEnvVar
++	"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT":  {},
++	"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT": {},
++	"TMPDIR":                              {}, // java.injector
++	"CLASSPATH":                           {}, // java route harvester
++}
++
++// envStrsToMap parses key=value environment entries. If retain is non-nil, only
++// keys present in it are kept, so unused variables are never allocated into the
++// resulting map.
++func envStrsToMap(varsStr []string, retain map[string]struct{}) map[string]string {
++	size := len(varsStr)
++	if retain != nil {
++		size = len(retain)
++	}
++	vars := make(map[string]string, size)
+ 
+ 	for _, s := range varsStr {
+ 		keyVal := strings.SplitN(s, "=", 2)
+@@ -22,6 +52,12 @@ func envStrsToMap(varsStr []string) map[string]string {
+ 		key := strings.TrimSpace(keyVal[0])
+ 		val := strings.TrimSpace(keyVal[1])
+ 
++		if retain != nil {
++			if _, ok := retain[key]; !ok {
++				continue
++			}
++		}
++
+ 		if key != "" && val != "" {
+ 			vars[key] = val
+ 		}
+@@ -41,7 +77,7 @@ func EnvVars(pid app.PID) (map[string]string, error) {
+ 		return nil, err
+ 	}
+ 
+-	m := envStrsToMap(varsStr)
++	m := envStrsToMap(varsStr, retainedEnvVars)
+ 
+ 	return m, nil
+ }
+diff --git a/pkg/internal/procs/procenv_test.go b/pkg/internal/procs/procenv_test.go
+index 3f560c36..85135bcd 100644
+--- a/pkg/internal/procs/procenv_test.go
++++ b/pkg/internal/procs/procenv_test.go
+@@ -4,6 +4,7 @@
+ package procs
+ 
+ import (
++	"strings"
+ 	"testing"
+ 
+ 	"github.com/stretchr/testify/assert"
+@@ -22,6 +23,21 @@ func TestEnvStrParsing(t *testing.T) {
+ 		"",
+ 	}
+ 
+-	res := envStrsToMap(strs)
++	res := envStrsToMap(strs, nil)
+ 	assert.Equal(t, map[string]string{"something": "else", "ok": "\"=  =\"", "weird": "=  =", "resources": "a=b,c=d,e=  fg"}, res)
+ }
++
++func TestEnvStrParsingRetainsOnlyRequestedVars(t *testing.T) {
++	strs := []string{
++		"OTEL_SERVICE_NAME=my-service",
++		"OTEL_RESOURCE_ATTRIBUTES=a=b,c=d",
++		"SOME_LARGE_UNUSED_VAR=" + strings.Repeat("x", 4096),
++		"ANOTHER_UNUSED=value",
++	}
++
++	res := envStrsToMap(strs, retainedEnvVars)
++	assert.Equal(t, map[string]string{
++		"OTEL_SERVICE_NAME":        "my-service",
++		"OTEL_RESOURCE_ATTRIBUTES": "a=b,c=d",
++	}, res)
++}
