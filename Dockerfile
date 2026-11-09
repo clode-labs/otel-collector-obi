@@ -6,23 +6,16 @@
 # consumes a "source-generated" tarball instead.
 #
 # This mirrors scripts/prepare-obi.sh from opentelemetry-collector-releases: the
-# same tarball, verified against the same SHA256SUMS. The only difference is
-# which patches are applied on top, selected by PATCH_SET, so every variant
-# comes out of an identical pipeline:
-#
-#   none  upstream, unmodified
-#   env   env-var retention fix only
-#   full  env-var retention fix plus the zero-offset uprobe guard
-#
-# Building all three lets each fix be attributed on its own rather than as a pair.
+# same tarball, verified against the same SHA256SUMS. No patches are applied:
+# both fixes this repo used to carry for OBI v0.10.0 are upstream as of v0.15.x
+# (see retired-patches/README.md).
 
-ARG GO_IMG=golang:1.25-bookworm
+ARG GO_IMG=golang:1.26-bookworm
 ARG RUNTIME_IMG=gcr.io/distroless/static-debian12
 
-# 1. Fetch and verify the OBI source-generated tarball, then optionally patch it.
+# 1. Fetch and verify the OBI source-generated tarball.
 FROM ${GO_IMG} AS obi-src
-ARG OBI_VERSION=v0.10.0
-ARG PATCH_SET=full
+ARG OBI_VERSION=v0.15.2
 WORKDIR /tmp/obi
 RUN set -eux; \
     base="https://github.com/open-telemetry/opentelemetry-ebpf-instrumentation/releases/download/${OBI_VERSION}"; \
@@ -37,27 +30,14 @@ RUN set -eux; \
     mkdir -p /src/obi-src; \
     tar -xzf "${tarball}" -C /src/obi-src --strip-components=1
 
-COPY patches/ /tmp/patches/
-RUN set -eux; \
-    cd /src/obi-src; \
-    case "${PATCH_SET}" in \
-      none) echo "PATCH_SET=none: building upstream unmodified" ;; \
-      env)  git apply --verbose /tmp/patches/01-envvar-retention.patch ;; \
-      full) git apply --verbose /tmp/patches/01-envvar-retention.patch; \
-            git apply --verbose /tmp/patches/02-uprobe-zero-offset.patch ;; \
-      *)    echo "unknown PATCH_SET: ${PATCH_SET}" >&2; exit 1 ;; \
-    esac; \
-    echo "PATCH_SET=${PATCH_SET} applied"
-
 # 2. Build the collector against that source tree.
 FROM ${GO_IMG} AS build
 ARG TARGETARCH=amd64
-ARG PATCH_SET=full
 ENV CGO_ENABLED=0 GOOS=linux
 WORKDIR /build
 COPY --from=obi-src /src/obi-src /src/obi-src
 COPY manifest.yaml ./manifest.yaml
-RUN go install go.opentelemetry.io/collector/cmd/builder@v0.156.0
+RUN go install go.opentelemetry.io/collector/cmd/builder@v0.165.0
 RUN GOARCH=${TARGETARCH} builder --config=./manifest.yaml
 
 # 3. Runtime. Entrypoint and binary name match the upstream contrib image so the

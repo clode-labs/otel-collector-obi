@@ -8,7 +8,7 @@ on:
       obi_version:
         description: OBI release to build against
         required: false
-        default: v0.10.0
+        default: v0.15.2
 
 permissions:
   contents: read
@@ -21,15 +21,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Identical pipeline, identical component set. The only difference is
-          # which patches are applied, so the variants can be compared directly
-          # and each fix attributed on its own.
-          - variant: patched
-            patch_set: full
-          - variant: envonly
-            patch_set: env
-          - variant: baseline
-            patch_set: none
+          # One variant: upstream OBI, unpatched. The patches carried for OBI
+          # v0.10.0 are upstream as of v0.15.x (retired-patches/README.md). The
+          # matrix is kept so a patched variant can return without reshaping tags.
+          - variant: upstream
     steps:
       - uses: actions/checkout@v4
 
@@ -68,8 +63,7 @@ jobs:
           push: true
           provenance: false
           build-args: |
-            OBI_VERSION=${{ github.event.inputs.obi_version || 'v0.10.0' }}
-            PATCH_SET=${{ matrix.patch_set }}
+            OBI_VERSION=${{ github.event.inputs.obi_version || 'v0.15.2' }}
           # EVERY TAG CARRYING MEANING ENDS IN -sha-<short>, so it is never
           # reused and is safe to reference from a manifest:
           #
@@ -77,7 +71,7 @@ jobs:
           #   <contrib>-obi-<obi>-<variant>-sha-<short>  same image, fully described
           #
           # Only <variant> floats, and it exists purely so a human can pull
-          # "the current patched one". Never reference it from a manifest.
+          # "the current one". Never reference it from a manifest.
           #
           # Why no floating tag may carry meaning: these images are consumed
           # through an ECR pull-through cache, which caches by tag and does not
@@ -93,7 +87,7 @@ jobs:
           # immutable tag is both the safe form and the readable one.
           tags: |
             ghcr.io/clode-labs/otel-collector-obi:${{ matrix.variant }}-sha-${{ steps.v.outputs.short }}
-            ghcr.io/clode-labs/otel-collector-obi:${{ steps.v.outputs.contrib }}-obi-${{ github.event.inputs.obi_version || 'v0.10.0' }}-${{ matrix.variant }}-sha-${{ steps.v.outputs.short }}
+            ghcr.io/clode-labs/otel-collector-obi:${{ steps.v.outputs.contrib }}-obi-${{ github.event.inputs.obi_version || 'v0.15.2' }}-${{ matrix.variant }}-sha-${{ steps.v.outputs.short }}
             ghcr.io/clode-labs/otel-collector-obi:${{ matrix.variant }}
           cache-from: type=gha,scope=${{ matrix.variant }}
           cache-to: type=gha,mode=max,scope=${{ matrix.variant }}
